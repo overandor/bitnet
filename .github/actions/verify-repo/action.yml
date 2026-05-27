@@ -1,0 +1,82 @@
+name: 'BitNet Verify Repo'
+description: 'Scan a repository and verify it against a previous BitNet receipt'
+author: 'BitNet Contributors'
+
+inputs:
+  receipt-path:
+    description: 'Path to the previous BitNet receipt JSON file'
+    required: false
+    default: 'bitnet-receipt.json'
+  output-path:
+    description: 'Path to write the new receipt'
+    required: false
+    default: 'bitnet-receipt.json'
+  scan-root:
+    description: 'Root directory to scan'
+    required: false
+    default: '.'
+  fail-on-tamper:
+    description: 'Fail the workflow if tampering is detected against a previous receipt'
+    required: false
+    default: 'true'
+  max-files:
+    description: 'Maximum files to scan'
+    required: false
+    default: '1000'
+
+outputs:
+  merkle-root:
+    description: 'Computed Merkle root of the scanned folder'
+    value: ${{ steps.scan.outputs.merkle_root }}
+  receipt-hash:
+    description: 'SHA-256 hash of the canonical receipt'
+    value: ${{ steps.scan.outputs.receipt_hash }}
+  status:
+    description: 'Result: UNCHANGED, TAMPERED, or NEW'
+    value: ${{ steps.scan.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install BitNet
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install bitnet
+
+    - name: Scan repository
+      id: scan
+      shell: bash
+      run: |
+        set -e
+        if [ -f "${{ inputs.receipt-path }}" ]; then
+          echo "Previous receipt found. Running replay..."
+          bitnet replay "${{ inputs.scan-root }}" "${{ inputs.receipt-path }}" > replay_output.txt 2>&1
+          STATUS=$(grep -o 'UNCHANGED\|TAMPERED' replay_output.txt || echo "UNKNOWN")
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "TAMPERED" ] && [ "${{ inputs.fail-on-tamper }}" = "true" ]; then
+            echo "::error::Tampering detected against previous receipt"
+            exit 1
+          fi
+        else
+          echo "No previous receipt found. Generating new receipt..."
+          echo "status=NEW" >> "$GITHUB_OUTPUT"
+        fi
+
+        bitnet receipt "${{ inputs.scan-root }}" "${{ inputs.output-path }}" --max-files "${{ inputs.max-files }}" > receipt_output.txt 2>&1
+        MERKLE=$(grep -o 'Merkle Root: sha256:[a-f0-9]*' receipt_output.txt | cut -d' ' -f3 || echo "")
+        HASH=$(grep -o 'Hash: [a-f0-9]*' receipt_output.txt | cut -d' ' -f2 || echo "")
+        echo "merkle_root=$MERKLE" >> "$GITHUB_OUTPUT"
+        echo "receipt_hash=$HASH" >> "$GITHUB_OUTPUT"
+
+    - name: Upload receipt artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bitnet-receipt
+        path: ${{ inputs.output-path }}
