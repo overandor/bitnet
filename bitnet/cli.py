@@ -18,6 +18,14 @@ from bitnet.anchor import anchor_service
 from bitnet.receipt import make_receipt, receipt_hash, verify_receipt
 from bitnet.proof import export_proof, verify_proof_bundle, replay_snapshot
 from bitnet.git import get_git_root, get_head_commit, get_head_message, install_hook, uninstall_hook
+from bitnet.agent_receipt import (
+    AgentChain,
+    make_agent_receipt,
+    agent_receipt_hash,
+    verify_agent_receipt,
+    is_material_action,
+    MATERIAL_ACTIONS,
+)
 
 console = Console()
 
@@ -477,6 +485,140 @@ def attest(receipt_path: str, rekor: bool, key: str):
     console.print("    2. Sign the receipt with an Ed25519 key")
     console.print("    3. Optionally publish to Sigstore Rekor for transparency")
     console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+
+
+@main.command("agent-action")
+@click.argument("action_type", type=str)
+@click.option("--agent-id", default="bitnet-cli", help="Agent identifier")
+@click.option("--workspace-hash", default="", help="SHA-256 of workspace state")
+@click.option("--input-hash", default="", help="SHA-256 of inputs")
+@click.option("--output-hash", default="", help="SHA-256 of outputs")
+@click.option("--tool-used", default="", help="Tool or sub-system that performed the action")
+@click.option("--files-touched", default="", help="Comma-separated list of files touched")
+@click.option("--merkle-root", default="", help="Merkle root if a folder snapshot was involved")
+@click.option("--metadata", default="", help="JSON string of extra metadata")
+@click.option("--anchor", is_flag=True, help="Anchor the action hash on-chain (Solana memo)")
+@click.option("--quiet", is_flag=True, help="Suppress banner and table output")
+def agent_action(
+    action_type: str,
+    agent_id: str,
+    workspace_hash: str,
+    input_hash: str,
+    output_hash: str,
+    tool_used: str,
+    files_touched: str,
+    merkle_root: str,
+    metadata: str,
+    anchor: bool,
+    quiet: bool,
+):
+    """Log a material agent action to the receipt chain."""
+    if not quiet:
+        print_banner()
+
+    if not is_material_action(action_type):
+        if not quiet:
+            console.print(f"\n[yellow]Skipped:[/yellow] '{action_type}' is not a material action under default policy.\n")
+        return
+
+    chain = AgentChain()
+    files_list = [f.strip() for f in files_touched.split(",") if f.strip()] if files_touched else []
+    meta = json.loads(metadata) if metadata else None
+
+    entry = chain.append(
+        action_type=action_type,
+        agent_id=agent_id,
+        workspace_hash=workspace_hash,
+        input_hash=input_hash,
+        output_hash=output_hash,
+        tool_used=tool_used,
+        files_touched=files_list,
+        merkle_root=merkle_root,
+        metadata=meta,
+    )
+
+    receipt = entry["receipt"]
+    chain_hash = entry["chain_hash"]
+
+    if not quiet:
+        console.print(f"\n[bold]Agent Action Logged[/bold]\n")
+        table = Table()
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Action ID", receipt["action_id"])
+        table.add_row("Type", receipt["action_type"])
+        table.add_row("Agent", receipt["agent_id"])
+        table.add_row("Timestamp", receipt["timestamp"])
+        table.add_row("Chain Hash", chain_hash[:32] + "...")
+        if receipt["previous_action_hash"]:
+            table.add_row("Previous Hash", receipt["previous_action_hash"][:32] + "...")
+        else:
+            table.add_row("Previous Hash", "(genesis)")
+        console.print(table)
+
+    if anchor:
+        if not quiet:
+            console.print(f"\n[dim]Anchoring to Solana...[/dim]")
+        import asyncio
+        memo = f"BITNET_ACTION:{chain_hash}"
+        result = asyncio.run(anchor_service._send_memo(memo))
+        if result and result.get("status") == "confirmed":
+            entry["anchored"] = True
+            if not quiet:
+                console.print(f"[green]Anchored:[/green] {result['explorer_url']}")
+        else:
+            if not quiet:
+                console.print(f"[red]Anchor failed:[/red] {result}")
+
+    if not quiet:
+        console.print()
+
+
+@main.command("agent-chain-verify")
+@click.option("--chain-path", type=click.Path(), help="Path to agent chain JSONL file")
+@click.option("--quiet", is_flag=True, help="Output only result")
+def agent_chain_verify(chain_path: str, quiet: bool):
+    """Verify the integrity of the agent action hash chain."""
+    if not quiet:
+        print_banner()
+
+    chain = AgentChain(Path(chain_path) if chain_path else None)
+    report = chain.verify_chain()
+
+    if quiet:
+        print("VALID" if report["valid"] else "INVALID")
+        if report["errors"]:
+            for e in report["errors"]:
+                print(f"ERROR: {e}")
+        return
+
+    console.print(f"\n[bold]Agent Chain Verification[/bold]\n")
+    table = Table()
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Valid", str(report["valid"]))
+    table.add_row("Entries", str(report["length"]))
+    table.add_row("Errors", str(len(report["errors"])))
+    console.print(table)
+
+    if report["errors"]:
+        console.print("\n[red]Errors:[/red]")
+        for e in report["errors"]:
+            console.print(f"  - {e}")
+    else:
+        console.print("\n[green]Chain integrity verified. No tampering detected.[/green]")
+    console.print()
+
+
+@main.command("agent-policy")
+def agent_policy():
+    """Show the default agent action anchoring policy."""
+    print_banner()
+    console.print("\n[bold]Agent Action Policy[/bold]\n")
+    console.print("[cyan]Material actions (anchored by default):[/cyan]")
+    for action in sorted(MATERIAL_ACTIONS):
+        console.print(f"  [green]•[/green] {action}")
+    console.print("\n[dim]All other actions are silently skipped.[/dim]\n")
 
 
 @main.command()
