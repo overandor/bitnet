@@ -17,6 +17,7 @@ from bitnet.watcher import upsert_watcher, stop_watcher, record_run
 from bitnet.anchor import anchor_service
 from bitnet.receipt import make_receipt, receipt_hash, verify_receipt
 from bitnet.proof import export_proof, verify_proof_bundle, replay_snapshot
+from bitnet.git import get_git_root, get_head_commit, get_head_message, install_hook, uninstall_hook
 
 console = Console()
 
@@ -43,6 +44,8 @@ def main(ctx):
         console.print("  [cyan]bitnet export-proof[/cyan]  Export a portable proof bundle")
         console.print("  [cyan]bitnet verify-proof[/cyan]  Verify a proof bundle")
         console.print("  [cyan]bitnet replay[/cyan]      Rescan and compare against a receipt")
+        console.print("  [cyan]bitnet prove-repo[/cyan]  Prove current Git repository state")
+        console.print("  [cyan]bitnet install-hook[/cyan] Install pre-commit hook")
         console.print("  [cyan]bitnet serve[/cyan]       Launch the web dashboard")
         console.print("\n[dim]More: https://github.com/bitnet/bitnet[/dim]\n")
 
@@ -267,6 +270,73 @@ def replay(folder: str, receipt_path: str, max_files: int):
         console.print("[dim]Merkle roots do not match.[/dim]\n")
     else:
         console.print(f"\n[red]Error:[/red] {'; '.join(report['errors'])}\n")
+
+
+@main.command("prove-repo")
+@click.option("--output", "output_path", type=click.Path(), help="Write receipt JSON to file")
+@click.option("--quiet", is_flag=True, help="Suppress banner and table output")
+def prove_repo(output_path: str, quiet: bool):
+    """Scan the current Git repository and generate a receipt with commit info."""
+    if not quiet:
+        print_banner()
+
+    root = get_git_root()
+    if not root:
+        console.print("[red]Not inside a Git repository.[/red]")
+        raise click.Abort()
+
+    commit = get_head_commit()
+    message = get_head_message()
+
+    if not quiet:
+        console.print(f"\n[bold]Proving repository:[/bold] {root}")
+        console.print(f"  HEAD: {commit[:12]}..." if commit else "  HEAD: unknown")
+        console.print(f"  {message}\n" if message else "")
+
+    snapshot = FolderSnapshot(root, max_files=1000).scan()
+
+    if not quiet:
+        table = Table()
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Files", str(len(snapshot.files)))
+        table.add_row("Duplicates", str(snapshot.duplicate_files))
+        table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
+        table.add_row("Merkle Root", snapshot.merkle_root[:64] + "...")
+        console.print(table)
+
+    receipt = make_receipt(snapshot)
+    receipt["git_commit"] = commit
+    receipt["git_message"] = message
+
+    if output_path:
+        Path(output_path).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+        if not quiet:
+            console.print(f"\n[dim]Receipt written to {output_path}[/dim]")
+
+    if not quiet:
+        console.print(f"\n[green]Repository proven.[/green] Receipt hash: {receipt_hash(receipt)[:16]}...\n")
+
+
+@main.command("install-hook")
+def install_hook_cmd():
+    """Install the BitNet pre-commit hook in the current Git repository."""
+    print_banner()
+    hook_path = install_hook()
+    if hook_path:
+        console.print(f"\n[green]Hook installed:[/green] {hook_path}\n")
+    else:
+        console.print("[red]Not inside a Git repository.[/red]\n")
+
+
+@main.command("uninstall-hook")
+def uninstall_hook_cmd():
+    """Remove the BitNet pre-commit hook from the current Git repository."""
+    print_banner()
+    if uninstall_hook():
+        console.print("\n[green]Hook removed.[/green]\n")
+    else:
+        console.print("[red]No hook to remove.[/red]\n")
 
 
 @main.command()
