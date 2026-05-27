@@ -46,6 +46,9 @@ def main(ctx):
         console.print("  [cyan]bitnet replay[/cyan]      Rescan and compare against a receipt")
         console.print("  [cyan]bitnet prove-repo[/cyan]  Prove current Git repository state")
         console.print("  [cyan]bitnet install-hook[/cyan] Install pre-commit hook")
+        console.print("  [cyan]bitnet scan <path>[/cyan]  Scan without persistence")
+        console.print("  [cyan]bitnet receipt <path> <out>[/cyan] Generate receipt file")
+        console.print("  [cyan]bitnet diff <a> <b>[/cyan] Compare two receipts")
         console.print("  [cyan]bitnet serve[/cyan]       Launch the web dashboard")
         console.print("\n[dim]More: https://github.com/bitnet/bitnet[/dim]\n")
 
@@ -337,6 +340,143 @@ def uninstall_hook_cmd():
         console.print("\n[green]Hook removed.[/green]\n")
     else:
         console.print("[red]No hook to remove.[/red]\n")
+
+
+@main.command()
+@click.argument("folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option("--max-files", default=250, help="Maximum files to scan")
+@click.option("--output", "output_path", type=click.Path(), help="Write receipt JSON to file")
+def scan(folder: str, max_files: int, output_path: str):
+    """Scan a folder and optionally output a receipt (no persistence)."""
+    print_banner()
+    folder_path = Path(folder).resolve()
+    console.print(f"\n[bold]Scanning:[/bold] {folder_path}\n")
+    snapshot = FolderSnapshot(folder_path, max_files).scan()
+
+    table = Table()
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Files", str(len(snapshot.files)))
+    table.add_row("Duplicates", str(snapshot.duplicate_files))
+    table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
+    table.add_row("Merkle Root", snapshot.merkle_root)
+    console.print(table)
+
+    if output_path:
+        receipt = make_receipt(snapshot)
+        Path(output_path).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+        console.print(f"\n[dim]Receipt written to {output_path}[/dim]")
+    console.print()
+
+
+@main.command()
+@click.argument("folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("output", type=click.Path())
+@click.option("--max-files", default=250, help="Maximum files to scan")
+def receipt(folder: str, output: str, max_files: int):
+    """Generate a canonical receipt for a folder and write it to a file."""
+    print_banner()
+    folder_path = Path(folder).resolve()
+    console.print(f"\n[bold]Generating receipt:[/bold] {folder_path}\n")
+    snapshot = FolderSnapshot(folder_path, max_files).scan()
+    receipt = make_receipt(snapshot)
+    Path(output).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+    console.print(f"[green]Receipt written:[/green] {output}")
+    console.print(f"  Hash: {receipt_hash(receipt)[:32]}...")
+    console.print(f"  Files: {receipt['files_seen']}")
+    console.print(f"  Merkle Root: {receipt['merkle_root'][:64]}...\n")
+
+
+@main.command()
+@click.argument("receipt_a", type=click.Path(exists=True, dir_okay=False))
+@click.argument("receipt_b", type=click.Path(exists=True, dir_okay=False))
+def diff(receipt_a: str, receipt_b: str):
+    """Compare two receipts and show differences."""
+    print_banner()
+    try:
+        a = json.loads(Path(receipt_a).read_text())
+        b = json.loads(Path(receipt_b).read_text())
+    except Exception as exc:
+        console.print(f"[red]Cannot read receipt:[/red] {exc}\n")
+        return
+
+    console.print(f"\n[bold]Comparing receipts[/bold]\n")
+    table = Table()
+    table.add_column("Field", style="cyan")
+    table.add_column("Receipt A", style="green")
+    table.add_column("Receipt B", style="yellow")
+    table.add_column("Status", style="white")
+
+    fields = ["schema", "root", "merkle_root", "files_seen", "total_bytes", "scanned_at"]
+    for field in fields:
+        va = str(a.get(field, "N/A"))
+        vb = str(b.get(field, "N/A"))
+        status = "[green]match[/]" if va == vb else "[red]diff[/]"
+        table.add_row(field, va[:48], vb[:48], status)
+
+    console.print(table)
+
+    if a.get("merkle_root") == b.get("merkle_root"):
+        console.print("\n[green]Merkle roots match. Receipts describe the same folder state.[/green]\n")
+    else:
+        console.print("\n[red]Merkle roots differ. Folder state has changed between scans.[/red]\n")
+
+
+@main.command()
+@click.argument("receipt_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--key", type=click.Path(), help="Path to signing key (Ed25519 PEM)")
+def sign(receipt_path: str, key: str):
+    """Sign a BitNet receipt with a local key."""
+    print_banner()
+    console.print(f"\n[bold]Sign Receipt[/bold]\n")
+    console.print("  [yellow]Status:[/yellow] PLANNED")
+    console.print("  This command will cryptographically sign a receipt using Ed25519.")
+    console.print("  The signature will be embedded in the receipt as:")
+    console.print("    { ... , \"signature\": \"base64...\", \"public_key\": \"...\" }")
+    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+
+
+@main.command()
+@click.argument("folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("output", type=click.Path())
+@click.option("--max-files", default=250, help="Maximum files to scan")
+def sbom(folder: str, output: str, max_files: int):
+    """Generate an SBOM-compatible provenance receipt for a folder."""
+    print_banner()
+    console.print(f"\n[bold]SBOM Provenance[/bold]\n")
+    console.print("  [yellow]Status:[/yellow] PLANNED")
+    console.print("  This command will generate a SPDX/CycloneDX-compatible provenance document")
+    console.print("  that binds the folder's Merkle root to a software bill of materials.")
+    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+
+
+@main.command("export-oscal")
+@click.argument("receipt_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output", type=click.Path())
+def export_oscal(receipt_path: str, output: str):
+    """Export a BitNet receipt as OSCAL assessment evidence."""
+    print_banner()
+    console.print(f"\n[bold]Export OSCAL[/bold]\n")
+    console.print("  [yellow]Status:[/yellow] PLANNED")
+    console.print("  This command will convert a BitNet receipt into NIST OSCAL assessment results")
+    console.print("  for inclusion in Authority to Operate (ATO) packages.")
+    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+
+
+@main.command()
+@click.argument("receipt_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--rekor", is_flag=True, help="Publish attestation to Sigstore Rekor")
+@click.option("--key", type=click.Path(), help="Path to signing key")
+def attest(receipt_path: str, rekor: bool, key: str):
+    """Attest a receipt's validity (cryptographic signing + optional transparency log)."""
+    print_banner()
+    console.print(f"\n[bold]Attest Receipt[/bold]\n")
+    console.print("  [yellow]Status:[/yellow] PLANNED")
+    console.print("  This command will:")
+    console.print("    1. Verify the receipt format and Merkle root")
+    console.print("    2. Sign the receipt with an Ed25519 key")
+    console.print("    3. Optionally publish to Sigstore Rekor for transparency")
+    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
 
 
 @main.command()

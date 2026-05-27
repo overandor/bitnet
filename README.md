@@ -2,7 +2,7 @@
 
 > **Self-proving folders.**
 
-BitNet turns any folder into a cryptographically verifiable object.
+BitNet is cryptographic evidence infrastructure for software, datasets, AI artifacts, and mission-critical folders.
 
 It continuously hashes files, builds Merkle trees, detects duplicates, and generates receipts you can independently verify — then watches forever.
 
@@ -12,7 +12,7 @@ It continuously hashes files, builds Merkle trees, detects duplicates, and gener
 
 ```bash
 pip install bitnet
-bitnet watch ~/important-folder
+bitnet scan ~/release-artifacts
 ```
 
 ## Demo (No Setup)
@@ -48,12 +48,28 @@ Receipt:
 ## What It Does
 
 ```
-Folder → SHA-256 → Deduplicate → Merkle Root → SQLite Receipt → Optional Solana Anchor → Watch Forever
+Folder → SHA-256 → Deduplicate → Merkle Root → Canonical Receipt → SQLite Audit Log → Watch Forever
 ```
 
-**One sentence:** Folders that continuously generate cryptographic proofs of their own integrity.
+**One sentence:** Local-first tamper-evident provenance for software supply chains.
 
 Re-scan a folder. If the Merkle root matches, nothing changed. If it differs, something tampered.
+
+## Federal & Compliance Positioning
+
+BitNet maps to recognized security frameworks:
+
+| Framework | BitNet Alignment |
+|-----------|------------------|
+| **NIST SSDF / SP 800-218** | Tamper-evident proof of software artifacts at build time |
+| **NIST RMF** | Audit evidence for file integrity controls |
+| **NIST SP 800-53 Rev 5** | CM-3, CM-5, SI-7, AU-6 |
+| **CISA Secure by Design** | Local-first, deterministic, auditable |
+| **SLSA** | Artifact integrity and build provenance (Level 2) |
+| **in-toto** | Layout-linkable receipts |
+| **SBOM** | Verify SPDX/CycloneDX files have not been altered |
+
+See [`COMPLIANCE.md`](COMPLIANCE.md) for the full control mapping.
 
 ## Proof Artifact
 
@@ -77,45 +93,59 @@ Verify with `bitnet verify <receipt>` or any SHA-256 implementation. Receipts us
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────┐     ┌──────────┐     ┌────────────┐
-│   Folder    │────▶│  SHA-256 │────▶│  Merkle  │────▶│  SQLite    │
-│   Files     │     │  Hashes  │     │   Root   │     │  Receipt   │
-└─────────────┘     └──────────┘     └────┬─────┘     └────────────┘
+┌─────────────┐     ┌──────────┐     ┌──────────┐     ┌─────────────────┐
+│   Folder    │────▶│  SHA-256 │────▶│  Merkle  │────▶│  Canonical      │
+│   Files     │     │  Hashes  │     │   Root   │     │  Receipt        │
+└─────────────┘     └──────────┘     └────┬─────┘     └─────────────────┘
                                           │
                                     ┌─────▼─────┐
-                                    │  Optional │
-                                    │  Solana   │
-                                    │  Anchor   │
+                                    │  SQLite   │
+                                    │  Audit    │
+                                    │  Log      │
                                     └───────────┘
 ```
 
-- **Local-first**: All hashing runs on your machine. No data leaves unless you explicitly anchor.
+- **Local-first**: All hashing runs on your machine. No telemetry. No external dependencies.
 - **Deterministic**: Same files, same order → same Merkle root, every time.
 - **Continuous**: Watchers re-scan on interval and detect changes automatically.
-- **Streaming**: O(1) memory per file. Scans 1,000 files in < 2 seconds on M1 MacBook.
+- **Streaming**: O(1) memory per file. Scans 1,000 files in < 50ms on modern hardware.
+- **Testable**: 36 passing tests. Reproducible builds.
 
 ## CLI
 
 ```bash
 bitnet demo                       # Zero-setup demo on synthetic folder
-bitnet watch <folder>             # Scan and persist to SQLite
+bitnet scan <folder>              # Scan without persistence
+bitnet watch <folder>             # Scan and persist to SQLite audit log
 bitnet watch <folder> --continuous   # Start a watcher loop
-bitnet verify <receipt>           # Validate receipt format
+bitnet receipt <folder> <out>       # Generate canonical receipt file
+bitnet verify <receipt>           # Validate receipt format and canonical hash
+bitnet diff <receipt-a> <receipt-b> # Compare two receipts
 bitnet export-proof <folder> <out>   # Portable proof bundle with Merkle proofs
 bitnet verify-proof <bundle>      # Independently verify a proof bundle
-bitnet replay <folder> <receipt>  # Rescan and compare against previous receipt
-bitnet prove-repo                 # Scan current git repo, include HEAD commit
+bitnet replay <folder> <receipt>  # Rescan and detect tampering
+bitnet prove-repo                 # Scan git repo, include HEAD commit
 bitnet install-hook               # Add pre-commit provenance hook
 bitnet serve                      # Launch dashboard at localhost:8765
 ```
 
+Planned commands (track progress in GitHub issues):
+
+```bash
+bitnet sign <receipt> --key <key>       # Ed25519 sign a receipt
+bitnet attest <receipt> --rekor         # Sign + publish to Sigstore Rekor
+bitnet sbom <folder> <out>              # SPDX/CycloneDX provenance
+bitnet export-oscal <receipt> <out>     # NIST OSCAL assessment evidence
+```
+
 ## Use Cases
 
-- **Code integrity**: Prove your source tree hasn't been tampered with
-- **Legal documents**: Timestamp and verify contract folders
-- **AI outputs**: Track provenance of generated artifacts
-- **Data pipelines**: Ensure datasets remain unchanged between stages
-- **Release artifacts**: Cryptographically bind release binaries to their source
+- **Software supply chain**: Prove build artifacts were not silently modified
+- **AI artifact provenance**: Track generated code, models, datasets
+- **Dataset integrity**: Ensure training data remains unchanged between stages
+- **Release verification**: Cryptographically bind release binaries to source
+- **Incident response**: Preserve evidence of folder state at a point in time
+- **Contractor audit**: Generate ATO-ready evidence for NIST controls
 
 ## Portable Proof Bundles
 
@@ -133,7 +163,7 @@ Bundles include per-file Merkle proofs, so every file's inclusion in the root is
 Prove a folder hasn't changed since a previous receipt:
 
 ```bash
-bitnet watch ~/project --output receipt.json
+bitnet receipt ~/project receipt.json
 # later...
 bitnet replay ~/project receipt.json
 # → Status: UNCHANGED
@@ -163,7 +193,7 @@ Attach a BitNet receipt to every push:
 - name: Generate provenance receipt
   run: |
     pip install bitnet
-    bitnet watch . --output receipt.json
+    bitnet scan . --output receipt.json
 - name: Upload receipt
   uses: actions/upload-artifact@v4
   with:
@@ -171,23 +201,26 @@ Attach a BitNet receipt to every push:
     path: receipt.json
 ```
 
-## Optional: Solana Anchoring
-
-Set `SOLANA_KEYPAIR_PATH` to a valid keypair JSON file. BitNet writes Merkle roots as **memo transactions** on Solana devnet. Purely notarization — no tokens, no contracts, no DeFi mechanics.
-
-```bash
-export SOLANA_KEYPAIR_PATH=/path/to/keypair.json
-pip install bitnet[solana]
-bitnet watch ~/important-folder --anchor
-```
-
 ## Trust
 
 - All hashing is local
-- All LLM inference is local (Ollama, optional)
 - No telemetry
-- No data leaves your machine unless you explicitly enable Solana anchoring
+- No data leaves your machine
 - Receipts are deterministic and independently verifiable
+- 36 passing tests with reproducible results
+- MIT licensed
+
+## What BitNet Is NOT
+
+- Not a blockchain protocol
+- Not a token system
+- Not a marketplace
+- Not a cloud storage service
+- Not a backup tool
+- Not a vulnerability scanner
+- Not a replacement for formal code signing (PKI)
+
+BitNet is a **local-first cryptographic provenance primitive**. It produces evidence. It does not enforce policy.
 
 ## Install
 
@@ -195,7 +228,7 @@ bitnet watch ~/important-folder --anchor
 pip install bitnet
 ```
 
-With Solana:
+With Solana notarization (optional):
 
 ```bash
 pip install bitnet[solana]
@@ -204,7 +237,7 @@ pip install bitnet[solana]
 ## Development
 
 ```bash
-git clone https://github.com/bitnet/bitnet.git
+git clone https://github.com/overandor/bitnet.git
 cd bitnet
 pip install -e ".[dev]"
 pytest
