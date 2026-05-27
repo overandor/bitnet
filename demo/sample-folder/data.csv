@@ -1,0 +1,5 @@
+id,name,category,value,created_at
+1,alpha,infrastructure,100,2024-01-15
+2,beta,frontend,200,2024-03-22
+3,gamma,data,50,2024-05-08
+4,delta,security,300,2024-07-14

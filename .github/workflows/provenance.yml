@@ -1,0 +1,31 @@
+name: Provenance
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  generate-receipt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install BitNet
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Generate provenance receipt
+        run: |
+          python -m bitnet.cli watch . --output bitnet-receipt.json
+
+      - name: Upload receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitnet-provenance-receipt
+          path: bitnet-receipt.json

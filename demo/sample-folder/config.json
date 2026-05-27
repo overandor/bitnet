@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "debug": false,
+  "log_level": "info",
+  "features": {
+    "hashing": true,
+    "merkle": true,
+    "watching": true
+  }
+}
