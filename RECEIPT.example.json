@@ -1,9 +1,10 @@
 {
+  "schema": "bitnet-receipt-v1",
   "root": "/home/user/project",
   "merkle_root": "sha256:a3f7b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
   "files_seen": 247,
-  "duplicate_files": 3,
   "duplicate_groups": 2,
+  "duplicate_files": 3,
   "total_bytes": 1843200,
   "scanned_at": "2024-06-15T14:32:11Z"
 }
