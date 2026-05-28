@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS chain_anchors (
     status TEXT DEFAULT 'confirmed',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    detail TEXT,
+    client_ip TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 

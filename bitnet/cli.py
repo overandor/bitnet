@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import click
@@ -180,28 +181,60 @@ def watch(folder: str, max_files: int, continuous: bool, anchor: bool, output_pa
 
 
 @main.command()
-@click.argument("receipt_json", type=str)
-def verify(receipt_json: str):
-    """Verify a snapshot receipt format and integrity."""
+@click.argument("receipt_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--folder", type=click.Path(exists=True, file_okay=False, dir_okay=True), help="Override folder to rescan")
+@click.option("--max-files", default=250, help="Maximum files to scan")
+def verify(receipt_path: str, folder: str, max_files: int):
+    """Verify a receipt by rescanning the folder and comparing Merkle roots."""
     print_banner()
+    receipt_file = Path(receipt_path)
     try:
-        receipt = json.loads(receipt_json)
+        receipt = json.loads(receipt_file.read_text())
     except Exception:
-        console.print("[red]Invalid JSON receipt.[/red]")
+        console.print("[red]Cannot read receipt file.[/red]\n")
         return
 
-    report = verify_receipt(receipt)
+    format_report = verify_receipt(receipt)
     console.print(f"\n[bold]Verifying Receipt[/bold]\n")
     console.print(f"  Schema: {receipt.get('schema', 'unknown')}")
-    console.print(f"  Root: {receipt.get('root')}")
-    console.print(f"  Merkle Root: {receipt.get('merkle_root')}")
-    console.print(f"  Files: {receipt.get('files_seen')}")
-    console.print(f"  Hash: {report['receipt_hash'][:32]}...")
-    if report["valid"]:
-        console.print(f"\n[green]Receipt format valid and canonical.[/green]")
+    console.print(f"  Stored Root: {receipt.get('root')}")
+    console.print(f"  Stored Merkle: {receipt.get('merkle_root')}")
+    console.print(f"  Stored Files: {receipt.get('files_seen')}")
+    console.print(f"  Receipt Hash: {format_report['receipt_hash'][:32]}...")
+    if not format_report["valid"]:
+        console.print(f"\n[red]Receipt format invalid:[/red] {'; '.join(format_report['errors'])}")
+        return
+    console.print(f"\n[green]Receipt format valid.[/green]")
+
+    # Rescan
+    scan_root = folder or receipt.get("root", "")
+    if not scan_root:
+        console.print("[red]No folder specified and receipt has no root field.[/red]\n")
+        return
+    scan_path = Path(scan_root)
+    if not scan_path.exists():
+        console.print(f"[red]Folder not found:[/red] {scan_path}\n")
+        return
+
+    console.print(f"\n[dim]Rescanning {scan_path}...[/dim]")
+    snapshot = FolderSnapshot(scan_path, max_files).scan()
+    current_root = snapshot.merkle_root
+    stored_root = receipt.get("merkle_root", "")
+
+    table = Table()
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Current Merkle", current_root)
+    table.add_row("Stored Merkle", stored_root)
+    table.add_row("Current Files", str(len(snapshot.files)))
+    table.add_row("Stored Files", str(receipt.get("files_seen", 0)))
+    console.print(table)
+
+    if current_root == stored_root:
+        console.print(f"\n[green]Folder integrity verified.[/green] No tampering detected.\n")
     else:
-        console.print(f"\n[red]Receipt invalid:[/red] {'; '.join(report['errors'])}")
-    console.print("[dim]To verify file integrity, re-scan the folder and compare Merkle roots.[/dim]\n")
+        console.print(f"\n[red]TAMPERING DETECTED.[/red] Merkle root mismatch.")
+        console.print(f"  Folder state has changed since receipt was generated.\n")
 
 
 @main.command("export-proof")
@@ -672,14 +705,24 @@ def verify_snapshot_cmd(snapshot_dir: str):
 
 
 @main.command()
-@click.option("--host", default="0.0.0.0")
-@click.option("--port", default=8765, type=int)
-def serve(host: str, port: int):
-    """Launch the web dashboard."""
+@click.option("--host", default="127.0.0.1", help="Bind interface (default: 127.0.0.1)")
+@click.option("--port", default=8765, type=int, help="Port (default: 8765)")
+@click.option("--public", "is_public", is_flag=True, help="Bind 0.0.0.0 (WARNING: exposes filesystem)")
+def serve(host: str, port: int, is_public: bool):
+    """Launch the web dashboard (localhost by default)."""
+    if is_public:
+        host = "0.0.0.0"
+    else:
+        host = "127.0.0.1" if host == "0.0.0.0" else host
+
     print_banner()
-    console.print(f"\n[green]Dashboard running at http://{host}:{port}[/green]\n")
+    if host == "0.0.0.0":
+        console.print("\n[yellow]WARNING:[/yellow] Binding to 0.0.0.0 — any device on your network can access this dashboard.")
+        console.print("        Set BITNET_API_KEY to require authentication.\n")
+    console.print(f"\n[green]Dashboard running at http://{host}:{port}[/green]")
+    console.print(f"[dim]API key required: {'yes' if os.getenv('BITNET_API_KEY') else 'no (set BITNET_API_KEY to enforce)'}[/dim]\n")
     from bitnet.web import run_server
-    run_server()
+    run_server(host=host, port=port)
 
 
 if __name__ == "__main__":

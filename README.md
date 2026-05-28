@@ -60,13 +60,18 @@ bitnet demo                       # Zero-setup demo
 bitnet scan <folder>              # Scan without persistence
 bitnet watch <folder>             # Scan and persist to SQLite audit log
 bitnet receipt <folder> <out>     # Generate canonical receipt
-bitnet verify <receipt>           # Validate receipt format
+bitnet verify <receipt>           # Rescan folder and compare Merkle roots
 bitnet diff <a> <b>               # Compare two receipts
 bitnet export-proof <folder> <out>   # Portable proof bundle
 bitnet verify-proof <bundle>      # Verify proof bundle
 bitnet replay <folder> <receipt>  # Rescan and detect tampering
 bitnet prove-repo                 # Scan git repo, include HEAD
 bitnet install-hook               # Add pre-commit hook
+bitnet snapshot <folder> <out>    # Export portable snapshot directory
+bitnet verify-snapshot <dir>      # Verify snapshot integrity
+bitnet agent-action <type>        # Log material agent action
+bitnet agent-chain-verify         # Verify agent action hash chain
+bitnet agent-policy               # Show material action policy
 bitnet serve                      # Launch dashboard
 ```
 
@@ -83,8 +88,10 @@ bitnet serve                      # Launch dashboard
 
 - All hashing is local. No telemetry. No data leaves your machine.
 - Receipts are deterministic and independently verifiable.
-- 38 passing tests. Reproducible builds.
+- 53 passing tests. Reproducible builds.
 - MIT licensed.
+
+See [`THREAT_MODEL.md`](THREAT_MODEL.md) for what BitNet protects against and what it does not.
 
 ## What BitNet Is NOT
 

@@ -1,11 +1,13 @@
 """FastAPI web dashboard — view folder runs and Merkle roots."""
 
 import json
+import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from bitnet.db import get_db, init_db
@@ -13,8 +15,10 @@ from bitnet.scanner import FolderSnapshot
 from bitnet.watcher import upsert_watcher, stop_watcher, record_run
 from bitnet.anchor import anchor_service
 
-HOST = "0.0.0.0"
-PORT = 8765
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+
+API_KEY = os.getenv("BITNET_API_KEY", "")
 
 
 @asynccontextmanager
@@ -31,12 +35,40 @@ app = FastAPI(
 )
 
 
+async def _audit_log(action: str, detail: dict, client_ip: str = ""):
+    """Persist audit record for every state-changing API call."""
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO audit_log (action, detail, client_ip, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (action, json.dumps(detail, sort_keys=True), client_ip, datetime.now(timezone.utc).isoformat()),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def _require_api_key(request: Request):
+    """Require BITNET_API_KEY if set; always allow localhost."""
+    if not API_KEY:
+        return True
+    client = request.client
+    if client and client.host in ("127.0.0.1", "::1", "localhost"):
+        return True
+    header = request.headers.get("x-api-key", "")
+    query = request.query_params.get("api_key", "")
+    if header == API_KEY or query == API_KEY:
+        return True
+    return False
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     db = await get_db()
     try:
         runs_cursor = await db.execute(
-            "SELECT * FROM folder_runs WHERE status='complete' ORDER BY finished_at DESC LIMIT 12"")
+            "SELECT * FROM folder_runs WHERE status='complete' ORDER BY finished_at DESC LIMIT 12")
         runs = [dict(r) for r in await runs_cursor.fetchall()]
 
         watch_cursor = await db.execute(
@@ -156,13 +188,21 @@ async def home():
 
 
 @app.post("/api/watch")
-async def api_watch(root_path: str, interval: int = 300, max_files: int = 250):
+async def api_watch(request: Request, root_path: str, interval: int = 300, max_files: int = 250):
+    if not await _require_api_key(request):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    client_ip = request.client.host if request.client else ""
+    await _audit_log("watch", {"root_path": root_path, "interval": interval, "max_files": max_files}, client_ip)
     watcher = await upsert_watcher(root_path, interval, max_files)
     return {"status": "watching", "watcher_id": watcher["id"]}
 
 
 @app.post("/api/scan")
-async def api_scan(root_path: str, max_files: int = 250):
+async def api_scan(request: Request, root_path: str, max_files: int = 250):
+    if not await _require_api_key(request):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    client_ip = request.client.host if request.client else ""
+    await _audit_log("scan", {"root_path": root_path, "max_files": max_files}, client_ip)
     snapshot = FolderSnapshot(root_path, max_files).scan()
     db = await get_db()
     try:
@@ -187,5 +227,5 @@ async def api_health():
     return {"status": "ok", "version": "0.1.0"}
 
 
-def run_server():
-    uvicorn.run("bitnet.web:app", host=HOST, port=PORT, reload=False)
+def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
+    uvicorn.run("bitnet.web:app", host=host, port=port, reload=False)
