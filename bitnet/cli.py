@@ -26,6 +26,7 @@ from bitnet.agent_receipt import (
     is_material_action,
     MATERIAL_ACTIONS,
 )
+from bitnet.snapshot import export_snapshot, verify_snapshot
 
 console = Console()
 
@@ -619,6 +620,55 @@ def agent_policy():
     for action in sorted(MATERIAL_ACTIONS):
         console.print(f"  [green]•[/green] {action}")
     console.print("\n[dim]All other actions are silently skipped.[/dim]\n")
+
+
+@main.command("snapshot")
+@click.argument("folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("output_dir", type=click.Path())
+@click.option("--max-files", default=250, help="Maximum files to scan")
+def snapshot_cmd(folder: str, output_dir: str, max_files: int):
+    """Export a folder as a portable snapshot directory."""
+    print_banner()
+    folder_path = Path(folder).resolve()
+    out_path = Path(output_dir)
+    console.print(f"\n[bold]Exporting snapshot:[/bold] {folder_path}\n")
+    export_snapshot(folder_path, out_path, max_files)
+    console.print(f"[green]Snapshot written:[/green] {out_path}")
+    console.print(f"  receipt.json   — canonical receipt")
+    console.print(f"  manifest.json  — snapshot manifest")
+    console.print(f"  files.json     — per-file metadata")
+    console.print(f"  merkle.json    — Merkle tree structure")
+    console.print(f"  proof.json     — per-file Merkle proofs")
+    console.print(f"\n[dim]Verify with: bitnet verify-snapshot {out_path}[/dim]\n")
+
+
+@main.command("verify-snapshot")
+@click.argument("snapshot_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+def verify_snapshot_cmd(snapshot_dir: str):
+    """Verify a portable snapshot directory."""
+    print_banner()
+    dir_path = Path(snapshot_dir)
+    console.print(f"\n[bold]Verifying snapshot:[/bold] {dir_path}\n")
+    report = verify_snapshot(dir_path)
+
+    table = Table()
+    table.add_column("Check", style="cyan")
+    table.add_column("Result", style="green")
+    for check, result in report["checks"].items():
+        if isinstance(result, bool):
+            status = "[green]pass[/]" if result else "[red]FAIL[/]"
+        else:
+            status = str(result)
+        table.add_row(check, status)
+    console.print(table)
+
+    if report["valid"]:
+        console.print("\n[green]Snapshot is valid and independently verifiable.[/green]\n")
+    else:
+        console.print("\n[red]Snapshot invalid:[/red]")
+        for e in report["errors"]:
+            console.print(f"  - {e}")
+        console.print()
 
 
 @main.command()

@@ -46,12 +46,38 @@ def generate_merkle_proof(file_hash: str, file_hashes: List[str]) -> List[Dict[s
     return proof
 
 
+def build_merkle_tree(hashes: List[str]) -> Dict[str, Any]:
+    """Build full Merkle tree and return root + all levels.
+
+    Matches scanner.merkle_root construction exactly.
+    """
+    if not hashes:
+        empty = hashlib.sha256(b"").hexdigest()
+        return {"root": f"sha256:{empty}", "levels": [[empty]], "leaf_count": 0}
+
+    layer = [bytes.fromhex(h.replace("sha256:", "")) for h in sorted(hashes)]
+    levels = [layer[:]]  # store bytes at each level
+    while len(layer) > 1:
+        nxt = []
+        for i in range(0, len(layer), 2):
+            left = layer[i]
+            right = layer[i + 1] if i + 1 < len(layer) else left
+            nxt.append(hashlib.sha256(left + right).digest())
+        layer = nxt
+        levels.append(layer[:])
+
+    root = f"sha256:{layer[0].hex()}"
+    # convert levels to hex strings for serialization
+    hex_levels = [[n.hex() for n in lvl] for lvl in levels]
+    return {"root": root, "levels": hex_levels, "leaf_count": len(hashes)}
+
+
 def verify_merkle_proof(merkle_root: str, proof: List[Dict[str, str]], target_hash: str) -> bool:
     """Verify a Merkle proof against an expected root."""
     current_hash = target_hash.replace("sha256:", "")
     for step in proof:
         sibling = step["hash"].replace("sha256:", "")
-        if step["position"] == "left":
+        if step.get("position") == "left" or step.get("side") == "left":
             current_hash = hashlib.sha256(
                 bytes.fromhex(sibling) + bytes.fromhex(current_hash)
             ).hexdigest()

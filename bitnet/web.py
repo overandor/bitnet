@@ -12,7 +12,6 @@ from bitnet.db import get_db, init_db
 from bitnet.scanner import FolderSnapshot
 from bitnet.watcher import upsert_watcher, stop_watcher, record_run
 from bitnet.anchor import anchor_service
-from bitnet.appraisal import ollama_available
 
 HOST = "0.0.0.0"
 PORT = 8765
@@ -71,7 +70,6 @@ async def home():
         """
 
     solana_status = "on" if anchor_service.available else ""
-    ollama_status = "on" if await ollama_available() else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -124,7 +122,6 @@ async def home():
 
     <div class="services">
       <div class="service"><div><strong>Solana Devnet</strong><div class="mono">{anchor_service.wallet_address[:16]}... {await anchor_service.get_balance() if anchor_service.available else ""}</div></div><span class="dot {solana_status}"></span></div>
-      <div class="service"><div><strong>Ollama Appraisal</strong><div class="mono">local inference</div></div><span class="dot {ollama_status}"></span></div>
       <div class="service"><div><strong>SQLite WAL</strong><div class="mono">local persistence</div></div><span class="dot on"></span></div>
     </div>
 

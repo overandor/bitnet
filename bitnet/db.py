@@ -22,9 +22,6 @@ CREATE TABLE IF NOT EXISTS folder_runs (
     duplicate_bytes INTEGER DEFAULT 0,
     total_bytes INTEGER DEFAULT 0,
     merkle_root TEXT,
-    appraised_files INTEGER DEFAULT 0,
-    total_appraised_value_usd REAL DEFAULT 0,
-    total_lendable_value_usd REAL DEFAULT 0,
     kpi_json TEXT,
     anchor_tx TEXT,
     explorer_url TEXT,
@@ -44,7 +41,6 @@ CREATE TABLE IF NOT EXISTS folder_files (
     raw_hash TEXT NOT NULL,
     duplicate_of TEXT,
     change_status TEXT DEFAULT 'new',
-    appraised_value_usd REAL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -55,7 +51,6 @@ CREATE TABLE IF NOT EXISTS folder_watchers (
     max_files INTEGER DEFAULT 250,
     active INTEGER DEFAULT 1,
     anchor_enabled INTEGER DEFAULT 0,
-    appraise_enabled INTEGER DEFAULT 0,
     last_run_id INTEGER,
     last_run_at TEXT,
     last_summary_json TEXT,
@@ -73,22 +68,6 @@ CREATE TABLE IF NOT EXISTS chain_anchors (
     explorer_url TEXT,
     anchor_data_hash TEXT,
     status TEXT DEFAULT 'confirmed',
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS appraisals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_id INTEGER REFERENCES folder_files(id),
-    appraised_value_usd REAL DEFAULT 0,
-    appraisal_confidence REAL DEFAULT 0,
-    category TEXT,
-    complexity_score REAL DEFAULT 0,
-    estimated_hours REAL DEFAULT 0,
-    hourly_rate REAL DEFAULT 0,
-    reasoning TEXT,
-    model_used TEXT,
-    evidence_json TEXT,
-    receipt_hash TEXT,
     created_at TEXT NOT NULL
 );
 """

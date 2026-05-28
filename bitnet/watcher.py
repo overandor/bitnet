@@ -92,7 +92,6 @@ async def upsert_watcher(
     interval_seconds: int = 300,
     max_files: int = 250,
     anchor: bool = False,
-    appraise: bool = False,
 ) -> dict:
     """Create or update a folder watcher."""
     root = str(Path(root_path).expanduser().resolve())
@@ -102,16 +101,15 @@ async def upsert_watcher(
         await db.execute(
             """INSERT INTO folder_watchers (
                 root_path, interval_seconds, max_files, active, anchor_enabled,
-                appraise_enabled, created_at, updated_at
-            ) VALUES (?,?,?,1,?,?,?,?)
+                created_at, updated_at
+            ) VALUES (?,?,?,1,?,?,?)
             ON CONFLICT(root_path) DO UPDATE SET
                 interval_seconds=excluded.interval_seconds,
                 max_files=excluded.max_files,
                 active=1,
                 anchor_enabled=excluded.anchor_enabled,
-                appraise_enabled=excluded.appraise_enabled,
                 updated_at=excluded.updated_at""",
-            (root, interval_seconds, max_files, int(anchor), int(appraise), now, now),
+            (root, interval_seconds, max_files, int(anchor), now, now),
         )
         await db.commit()
         row = await (await db.execute("SELECT * FROM folder_watchers WHERE root_path=?", (root,))).fetchone()
