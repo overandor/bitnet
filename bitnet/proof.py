@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from bitnet.merkle import generate_merkle_proof, verify_merkle_proof
-from bitnet.receipt import canonical_json, make_receipt, receipt_hash, RECEIPT_SCHEMA_VERSION
-from bitnet.scanner import FolderSnapshot
+from bitnet.receipt import canonical_json, make_receipt, receipt_hash
+from bitnet.scanner import FolderSnapshot, canonical_leaf_hash
 
 PROOF_SCHEMA_VERSION = "bitnet-proof-v1"
+
+
+def _file_leaf_hash(file_info: dict) -> str:
+    """Return the canonical leaf hash for old or new snapshot records."""
+    if file_info.get("leaf_hash"):
+        return file_info["leaf_hash"]
+    return canonical_leaf_hash(
+        file_info["rel_path"],
+        int(file_info.get("size_bytes", 0)),
+        file_info["raw_hash"],
+    )
 
 
 def export_proof(
@@ -25,16 +35,19 @@ def export_proof(
         "schema": PROOF_SCHEMA_VERSION,
         "receipt": receipt,
         "receipt_hash": receipt_hash(receipt),
+        "leaf_model": "sha256(canonical_json(rel_path,size_bytes,raw_hash))",
         "files": [],
     }
 
     if include_file_proofs and snapshot.files:
-        hashes = [f["raw_hash"] for f in snapshot.files]
+        leaf_hashes = [_file_leaf_hash(f) for f in snapshot.files]
         for file_info in snapshot.files:
-            proof = generate_merkle_proof(file_info["raw_hash"], hashes)
+            leaf_hash = _file_leaf_hash(file_info)
+            proof = generate_merkle_proof(leaf_hash, leaf_hashes)
             bundle["files"].append({
                 "rel_path": file_info["rel_path"],
                 "raw_hash": file_info["raw_hash"],
+                "leaf_hash": leaf_hash,
                 "size_bytes": file_info["size_bytes"],
                 "merkle_proof": proof,
             })
@@ -80,10 +93,15 @@ def verify_proof_bundle(bundle_path: Path) -> dict:
 
     for f in files:
         proof = f.get("merkle_proof", [])
-        if verify_merkle_proof(merkle_root, proof, f["raw_hash"]):
+        leaf_hash = f.get("leaf_hash") or canonical_leaf_hash(
+            f.get("rel_path", ""),
+            int(f.get("size_bytes", 0)),
+            f.get("raw_hash", ""),
+        )
+        if verify_merkle_proof(merkle_root, proof, leaf_hash):
             report["files_verified"] += 1
         else:
-            report["errors"].append(f"Merkle proof failed for {f['rel_path']}")
+            report["errors"].append(f"Merkle proof failed for {f.get('rel_path', '<unknown>')}")
 
     if report["files_total"] > 0 and report["files_verified"] == report["files_total"]:
         report["merkle_root_match"] = True
