@@ -46,12 +46,12 @@ Receipt:
 ## What It Does
 
 ```
-Folder → SHA-256 → Merkle Root → Canonical Receipt
+Folder → SHA-256 files → path-bound Merkle leaves → Merkle Root → Canonical Receipt
 ```
 
-Re-scan a folder. If the Merkle root matches, nothing changed. If it differs, something tampered.
+Re-scan a folder. If the Merkle root matches, nothing changed. If it differs, content or path/layout state changed.
 
-BitNet maps to NIST SSDF, NIST RMF, NIST 800-53 (CM-3, CM-5, SI-7, AU-6), CISA Secure by Design, and SLSA Level 2. See [`COMPLIANCE.md`](COMPLIANCE.md) for the full control mapping.
+BitNet can produce evidence useful for NIST SSDF/RMF/800-53, CISA Secure by Design, and SLSA-style workflows, but it does **not** itself grant compliance, certification, ATO, or formal SLSA level. See [`COMPLIANCE.md`](COMPLIANCE.md) and [`TRUST_STATUS.md`](TRUST_STATUS.md).
 
 ## CLI
 
@@ -75,6 +75,8 @@ bitnet agent-policy               # Show material action policy
 bitnet serve                      # Launch dashboard
 ```
 
+Some advanced commands such as signing, SBOM export, OSCAL export, and Rekor attestation are present as planned CLI placeholders until implemented. See [`TRUST_STATUS.md`](TRUST_STATUS.md).
+
 ## Use Cases
 
 - **Software supply chain**: Prove build artifacts were not silently modified
@@ -82,13 +84,13 @@ bitnet serve                      # Launch dashboard
 - **Dataset integrity**: Ensure training data remains unchanged between stages
 - **Release verification**: Cryptographically bind release binaries to source
 - **Incident response**: Preserve evidence of folder state at a point in time
-- **Contractor audit**: Generate ATO-ready evidence for NIST controls
+- **Contractor audit evidence**: Generate local evidence that can support formal control assessments
 
 ## Trust
 
 - All hashing is local. No telemetry. No data leaves your machine.
 - Receipts are deterministic and independently verifiable.
-- 53 passing tests. Reproducible builds.
+- Folder roots are path-bound: relative path + size + file hash.
 - MIT licensed.
 
 See [`THREAT_MODEL.md`](THREAT_MODEL.md) for what BitNet protects against and what it does not.
@@ -102,6 +104,7 @@ See [`THREAT_MODEL.md`](THREAT_MODEL.md) for what BitNet protects against and wh
 - Not a backup tool
 - Not a vulnerability scanner
 - Not a replacement for formal code signing (PKI)
+- Not a compliance certification by itself
 
 BitNet is a **local-first cryptographic provenance primitive**. It produces evidence. It does not enforce policy.
 
