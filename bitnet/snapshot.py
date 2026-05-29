@@ -4,7 +4,7 @@ A snapshot is a self-contained directory:
     snapshot/
       receipt.json      — canonical receipt
       manifest.json     — manifest of the snapshot itself
-      files.json        — per-file metadata and hashes
+      files.json        — per-file metadata and path-bound hashes
       merkle.json       — Merkle tree structure
       proof.json        — per-file Merkle proofs
 """
@@ -12,16 +12,23 @@ A snapshot is a self-contained directory:
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from bitnet.scanner import FolderSnapshot
+from bitnet.scanner import FolderSnapshot, canonical_leaf_hash
 from bitnet.receipt import make_receipt, receipt_hash, verify_receipt
-from bitnet.proof import export_proof, verify_proof_bundle
 from bitnet.merkle import build_merkle_tree, generate_merkle_proof, verify_merkle_proof
 
 SNAPSHOT_SCHEMA = "bitnet-snapshot-v1"
+LEAF_MODEL = "sha256(canonical_json(rel_path,size_bytes,raw_hash))"
+
+
+def _leaf_hash(file_info: dict) -> str:
+    return file_info.get("leaf_hash") or canonical_leaf_hash(
+        file_info["rel_path"],
+        int(file_info.get("size_bytes", 0)),
+        file_info["raw_hash"],
+    )
 
 
 def export_snapshot(folder: Path, output_dir: Path, max_files: int = 250) -> Path:
@@ -30,30 +37,29 @@ def export_snapshot(folder: Path, output_dir: Path, max_files: int = 250) -> Pat
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # receipt.json
     receipt = make_receipt(snapshot)
     (output_dir / "receipt.json").write_text(
         json.dumps(receipt, indent=2, sort_keys=True)
     )
 
-    # manifest.json
     manifest = {
         "schema": SNAPSHOT_SCHEMA,
         "source_root": str(folder),
         "snapshot_created": receipt["scanned_at"],
         "receipt_hash": receipt_hash(receipt),
         "files_count": len(snapshot.files),
+        "leaf_model": LEAF_MODEL,
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True)
     )
 
-    # files.json
     files_data = [
         {
             "rel_path": f["rel_path"],
             "size_bytes": f["size_bytes"],
             "raw_hash": f["raw_hash"],
+            "leaf_hash": _leaf_hash(f),
             "modified_at": f["modified_at"],
             "duplicate_of": f["duplicate_of"],
         }
@@ -63,25 +69,26 @@ def export_snapshot(folder: Path, output_dir: Path, max_files: int = 250) -> Pat
         json.dumps(files_data, indent=2, sort_keys=True)
     )
 
-    # merkle.json
-    tree = build_merkle_tree([f["raw_hash"] for f in snapshot.files])
+    leaf_hashes = [f["leaf_hash"] for f in files_data]
+    tree = build_merkle_tree(leaf_hashes)
     merkle_data = {
         "root": tree["root"] if tree else None,
         "levels": tree["levels"] if tree else [],
         "leaf_count": len(snapshot.files),
+        "leaf_model": LEAF_MODEL,
     }
     (output_dir / "merkle.json").write_text(
         json.dumps(merkle_data, indent=2, sort_keys=True)
     )
 
-    # proof.json — per-file Merkle proofs
-    hashes = [f["raw_hash"] for f in snapshot.files]
     proofs = []
-    for f in snapshot.files:
-        proof = generate_merkle_proof(f["raw_hash"], hashes)
+    for f in files_data:
+        proof = generate_merkle_proof(f["leaf_hash"], leaf_hashes)
         proofs.append({
             "rel_path": f["rel_path"],
             "raw_hash": f["raw_hash"],
+            "leaf_hash": f["leaf_hash"],
+            "size_bytes": f["size_bytes"],
             "proof": proof,
         })
     (output_dir / "proof.json").write_text(
@@ -110,7 +117,6 @@ def verify_snapshot(snapshot_dir: Path) -> Dict[str, Any]:
     if not report["valid"]:
         return report
 
-    # Verify receipt format
     receipt = json.loads((snapshot_dir / "receipt.json").read_text())
     receipt_report = verify_receipt(receipt)
     report["checks"]["receipt_format"] = receipt_report["valid"]
@@ -118,22 +124,18 @@ def verify_snapshot(snapshot_dir: Path) -> Dict[str, Any]:
         report["valid"] = False
         report["errors"].extend(receipt_report["errors"])
 
-    # Verify manifest matches receipt
     manifest = json.loads((snapshot_dir / "manifest.json").read_text())
     report["checks"]["manifest_schema"] = manifest.get("schema") == SNAPSHOT_SCHEMA
     if manifest.get("receipt_hash") != receipt_hash(receipt):
         report["valid"] = False
         report["errors"].append("manifest receipt_hash does not match computed receipt hash")
 
-    # Verify files.json hash consistency
     files_data = json.loads((snapshot_dir / "files.json").read_text())
     merkle_data = json.loads((snapshot_dir / "merkle.json").read_text())
     proofs = json.loads((snapshot_dir / "proof.json").read_text())
 
-    # Rebuild Merkle root from files.json
-    from bitnet.merkle import build_merkle_tree
-    hashes = [f["raw_hash"] for f in files_data]
-    recomputed_tree = build_merkle_tree(hashes)
+    leaf_hashes = [_leaf_hash(f) for f in files_data]
+    recomputed_tree = build_merkle_tree(leaf_hashes)
     recomputed_root = recomputed_tree["root"] if recomputed_tree else None
 
     stored_root = merkle_data.get("root")
@@ -149,14 +151,16 @@ def verify_snapshot(snapshot_dir: Path) -> Dict[str, Any]:
         report["valid"] = False
         report["errors"].append("Merkle root in merkle.json does not match receipt")
 
-    # Verify per-file proofs
     files_verified = 0
     files_failed = 0
     for proof_entry in proofs:
-        rel_path = proof_entry["rel_path"]
-        raw_hash = proof_entry["raw_hash"]
+        leaf_hash = proof_entry.get("leaf_hash") or canonical_leaf_hash(
+            proof_entry["rel_path"],
+            int(proof_entry.get("size_bytes", 0)),
+            proof_entry["raw_hash"],
+        )
         proof = proof_entry["proof"]
-        if verify_merkle_proof(stored_root, proof, raw_hash):
+        if verify_merkle_proof(stored_root, proof, leaf_hash):
             files_verified += 1
         else:
             files_failed += 1
