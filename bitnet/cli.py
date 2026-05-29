@@ -19,18 +19,10 @@ from bitnet.anchor import anchor_service
 from bitnet.receipt import make_receipt, receipt_hash, verify_receipt
 from bitnet.proof import export_proof, verify_proof_bundle, replay_snapshot
 from bitnet.git import get_git_root, get_head_commit, get_head_message, install_hook, uninstall_hook
-from bitnet.agent_receipt import (
-    AgentChain,
-    make_agent_receipt,
-    agent_receipt_hash,
-    verify_agent_receipt,
-    is_material_action,
-    MATERIAL_ACTIONS,
-)
+from bitnet.agent_receipt import AgentChain, is_material_action, MATERIAL_ACTIONS
 from bitnet.snapshot import export_snapshot, verify_snapshot
 
 console = Console()
-
 DEMO_FOLDER = Path(__file__).parent.parent / "demo" / "sample-folder"
 
 
@@ -48,19 +40,27 @@ def main(ctx):
     if ctx.invoked_subcommand is None:
         print_banner()
         console.print("\n[dim]Commands:[/dim]")
-        console.print("  [cyan]bitnet demo[/cyan]        Run a zero-setup demo")
-        console.print("  [cyan]bitnet watch <path>[/cyan]  Start watching a folder")
-        console.print("  [cyan]bitnet verify[/cyan]      Verify a snapshot receipt")
-        console.print("  [cyan]bitnet export-proof[/cyan]  Export a portable proof bundle")
-        console.print("  [cyan]bitnet verify-proof[/cyan]  Verify a proof bundle")
-        console.print("  [cyan]bitnet replay[/cyan]      Rescan and compare against a receipt")
-        console.print("  [cyan]bitnet prove-repo[/cyan]  Prove current Git repository state")
-        console.print("  [cyan]bitnet install-hook[/cyan] Install pre-commit hook")
-        console.print("  [cyan]bitnet scan <path>[/cyan]  Scan without persistence")
-        console.print("  [cyan]bitnet receipt <path> <out>[/cyan] Generate receipt file")
-        console.print("  [cyan]bitnet diff <a> <b>[/cyan] Compare two receipts")
-        console.print("  [cyan]bitnet serve[/cyan]       Launch the web dashboard")
-        console.print("\n[dim]More: https://github.com/bitnet/bitnet[/dim]\n")
+        for cmd in [
+            "bitnet demo",
+            "bitnet watch <path>",
+            "bitnet verify <receipt>",
+            "bitnet export-proof <folder> <out>",
+            "bitnet verify-proof <bundle>",
+            "bitnet replay <folder> <receipt>",
+            "bitnet prove-repo",
+            "bitnet install-hook",
+            "bitnet scan <path>",
+            "bitnet receipt <path> <out>",
+            "bitnet diff <a> <b>",
+            "bitnet snapshot <folder> <out>",
+            "bitnet verify-snapshot <dir>",
+            "bitnet agent-action <type>",
+            "bitnet agent-chain-verify",
+            "bitnet agent-policy",
+            "bitnet serve",
+        ]:
+            console.print(f"  [cyan]{cmd}[/cyan]")
+        console.print("\n[dim]More: https://github.com/overandor/bitnet[/dim]\n")
 
 
 @main.command()
@@ -68,37 +68,32 @@ def demo():
     """Run a zero-setup demo with synthetic files."""
     print_banner()
     console.print("\n[bold]Demo[/bold]: Scanning synthetic sample folder...\n")
-
     demo_path = DEMO_FOLDER
     if not demo_path.exists():
         _create_demo_files(demo_path)
 
     snapshot = FolderSnapshot(demo_path, max_files=50).scan()
-
     table = Table(title="BitNet Demo Scan Results")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
-
     table.add_row("Folder", str(snapshot.root))
     table.add_row("Files Scanned", str(len(snapshot.files)))
     table.add_row("Duplicate Groups", str(snapshot.duplicate_groups))
     table.add_row("Duplicate Files", str(snapshot.duplicate_files))
     table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
     table.add_row("Merkle Root", snapshot.merkle_root)
-
     console.print(table)
 
-    # Demonstrate proof
     if snapshot.files:
         target = snapshot.files[0]
         from bitnet.merkle import generate_merkle_proof
-        proof = generate_merkle_proof(target["raw_hash"], [f["raw_hash"] for f in snapshot.files])
-        valid = verify_merkle_proof(snapshot.merkle_root, proof, target["raw_hash"])
+        leaves = [f["leaf_hash"] for f in snapshot.files]
+        proof = generate_merkle_proof(target["leaf_hash"], leaves)
+        valid = verify_merkle_proof(snapshot.merkle_root, proof, target["leaf_hash"])
         console.print(f"\n[dim]Merkle proof for {target['rel_path']}:[/dim]")
         console.print(f"  Valid: [{'green' if valid else 'red'}]{valid}[/]")
         console.print(f"  Proof depth: {len(proof)} sibling hashes")
 
-    # Canonical receipt
     receipt = make_receipt(snapshot)
     console.print(f"\n[dim]Receipt (hash {receipt_hash(receipt)[:16]}...):[/dim]")
     console.print(json.dumps(receipt, indent=2, sort_keys=True))
@@ -113,7 +108,6 @@ def _create_demo_files(path: Path):
     (path / "config.json").write_text('{"version": "1.0.0", "debug": false}\n')
     (path / "README.md").write_text("# Sample Project\n\nA demo folder for BitNet.\n")
     (path / "data.csv").write_text("id,name,value\n1,alpha,100\n2,beta,200\n")
-    # Create a duplicate
     (path / "backup").mkdir(exist_ok=True)
     (path / "backup" / "README.md").write_text("# Sample Project\n\nA demo folder for BitNet.\n")
 
@@ -129,36 +123,22 @@ def watch(folder: str, max_files: int, continuous: bool, anchor: bool, output_pa
     print_banner()
     folder_path = Path(folder).resolve()
     console.print(f"\n[bold]Scanning:[/bold] {folder_path}\n")
-
     asyncio.run(init_db())
-
     snapshot = FolderSnapshot(folder_path, max_files).scan()
+    _print_snapshot_table(snapshot)
 
-    table = Table()
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("Files", str(len(snapshot.files)))
-    table.add_row("Duplicates", str(snapshot.duplicate_files))
-    table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
-    table.add_row("Merkle Root", snapshot.merkle_root[:64] + "...")
-    console.print(table)
-
-    # Persist
     db = asyncio.run(get_db())
     try:
         run_id = asyncio.run(record_run(db, str(folder_path), snapshot))
     finally:
         asyncio.run(db.close())
-
     console.print(f"\n[dim]Saved as run_id={run_id}[/dim]")
 
-    # Write canonical receipt to file if requested
     if output_path:
-        receipt = make_receipt(snapshot)
-        Path(output_path).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+        receipt_data = make_receipt(snapshot)
+        Path(output_path).write_text(json.dumps(receipt_data, indent=2, sort_keys=True))
         console.print(f"[dim]Canonical receipt written to {output_path}[/dim]")
 
-    # Optional anchor
     if anchor:
         if not anchor_service.available:
             console.print("[yellow]Solana anchoring not available. Set SOLANA_KEYPAIR_PATH.[/yellow]")
@@ -180,6 +160,17 @@ def watch(folder: str, max_files: int, continuous: bool, anchor: bool, output_pa
             console.print("\n[dim]Watcher stopped.[/dim]")
 
 
+def _print_snapshot_table(snapshot: FolderSnapshot):
+    table = Table()
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Files", str(len(snapshot.files)))
+    table.add_row("Duplicates", str(snapshot.duplicate_files))
+    table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
+    table.add_row("Merkle Root", snapshot.merkle_root)
+    console.print(table)
+
+
 @main.command()
 @click.argument("receipt_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--folder", type=click.Path(exists=True, file_okay=False, dir_okay=True), help="Override folder to rescan")
@@ -187,27 +178,25 @@ def watch(folder: str, max_files: int, continuous: bool, anchor: bool, output_pa
 def verify(receipt_path: str, folder: str, max_files: int):
     """Verify a receipt by rescanning the folder and comparing Merkle roots."""
     print_banner()
-    receipt_file = Path(receipt_path)
     try:
-        receipt = json.loads(receipt_file.read_text())
+        receipt_data = json.loads(Path(receipt_path).read_text())
     except Exception:
         console.print("[red]Cannot read receipt file.[/red]\n")
         return
 
-    format_report = verify_receipt(receipt)
-    console.print(f"\n[bold]Verifying Receipt[/bold]\n")
-    console.print(f"  Schema: {receipt.get('schema', 'unknown')}")
-    console.print(f"  Stored Root: {receipt.get('root')}")
-    console.print(f"  Stored Merkle: {receipt.get('merkle_root')}")
-    console.print(f"  Stored Files: {receipt.get('files_seen')}")
-    console.print(f"  Receipt Hash: {format_report['receipt_hash'][:32]}...")
+    format_report = verify_receipt(receipt_data)
+    console.print("\n[bold]Verifying Receipt[/bold]\n")
+    console.print(f"  Schema: {receipt_data.get('schema', 'unknown')}")
+    console.print(f"  Stored Root: {receipt_data.get('root')}")
+    console.print(f"  Stored Merkle: {receipt_data.get('merkle_root')}")
+    console.print(f"  Stored Files: {receipt_data.get('files_seen')}")
+    console.print(f"  Receipt Hash: {format_report.get('receipt_hash', '')[:32]}...")
     if not format_report["valid"]:
         console.print(f"\n[red]Receipt format invalid:[/red] {'; '.join(format_report['errors'])}")
         return
-    console.print(f"\n[green]Receipt format valid.[/green]")
+    console.print("\n[green]Receipt format valid.[/green]")
 
-    # Rescan
-    scan_root = folder or receipt.get("root", "")
+    scan_root = folder or receipt_data.get("root", "")
     if not scan_root:
         console.print("[red]No folder specified and receipt has no root field.[/red]\n")
         return
@@ -219,7 +208,7 @@ def verify(receipt_path: str, folder: str, max_files: int):
     console.print(f"\n[dim]Rescanning {scan_path}...[/dim]")
     snapshot = FolderSnapshot(scan_path, max_files).scan()
     current_root = snapshot.merkle_root
-    stored_root = receipt.get("merkle_root", "")
+    stored_root = receipt_data.get("merkle_root", "")
 
     table = Table()
     table.add_column("Field", style="cyan")
@@ -227,14 +216,14 @@ def verify(receipt_path: str, folder: str, max_files: int):
     table.add_row("Current Merkle", current_root)
     table.add_row("Stored Merkle", stored_root)
     table.add_row("Current Files", str(len(snapshot.files)))
-    table.add_row("Stored Files", str(receipt.get("files_seen", 0)))
+    table.add_row("Stored Files", str(receipt_data.get("files_seen", 0)))
     console.print(table)
 
     if current_root == stored_root:
-        console.print(f"\n[green]Folder integrity verified.[/green] No tampering detected.\n")
+        console.print("\n[green]Folder integrity verified.[/green] No tampering detected.\n")
     else:
-        console.print(f"\n[red]TAMPERING DETECTED.[/red] Merkle root mismatch.")
-        console.print(f"  Folder state has changed since receipt was generated.\n")
+        console.print("\n[red]TAMPERING DETECTED.[/red] Merkle root mismatch.")
+        console.print("  Folder state has changed since receipt was generated.\n")
 
 
 @main.command("export-proof")
@@ -246,10 +235,8 @@ def export_proof_cmd(folder: str, output: str, max_files: int):
     print_banner()
     folder_path = Path(folder).resolve()
     console.print(f"\n[bold]Exporting proof:[/bold] {folder_path}\n")
-
     snapshot = FolderSnapshot(folder_path, max_files).scan()
     out_path = export_proof(snapshot, Path(output))
-
     console.print(f"[green]Proof bundle written:[/green] {out_path}")
     console.print(f"  Files: {len(snapshot.files)}")
     console.print(f"  Merkle Root: {snapshot.merkle_root[:64]}...")
@@ -264,7 +251,6 @@ def verify_proof_cmd(bundle_path: str):
     print_banner()
     path = Path(bundle_path)
     console.print(f"\n[bold]Verifying proof bundle:[/bold] {path}\n")
-
     report = verify_proof_bundle(path)
     table = Table()
     table.add_column("Check", style="cyan")
@@ -273,7 +259,6 @@ def verify_proof_cmd(bundle_path: str):
     table.add_row("Merkle root match", str(report["merkle_root_match"]))
     table.add_row("Files verified", f"{report['files_verified']} / {report['files_total']}")
     console.print(table)
-
     if report["valid"]:
         console.print("\n[green]Proof bundle is valid and independently verifiable.[/green]\n")
     else:
@@ -289,15 +274,12 @@ def replay(folder: str, receipt_path: str, max_files: int):
     print_banner()
     folder_path = Path(folder).resolve()
     console.print(f"\n[bold]Replaying snapshot:[/bold] {folder_path}\n")
-
     try:
         previous = json.loads(Path(receipt_path).read_text())
     except Exception as exc:
         console.print(f"[red]Cannot read receipt:[/red] {exc}")
         return
-
     report = replay_snapshot(folder_path, previous, max_files)
-
     table = Table()
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
@@ -307,7 +289,6 @@ def replay(folder: str, receipt_path: str, max_files: int):
     table.add_row("Previous Files", str(report["previous_files_seen"]))
     table.add_row("Current Files", str(report["files_seen"]))
     console.print(table)
-
     if report["match"]:
         console.print("\n[green]Folder is unchanged. Receipt verified.[/green]\n")
     elif report["status"] == "tampered":
@@ -324,43 +305,28 @@ def prove_repo(output_path: str, quiet: bool):
     """Scan the current Git repository and generate a receipt with commit info."""
     if not quiet:
         print_banner()
-
     root = get_git_root()
     if not root:
         console.print("[red]Not inside a Git repository.[/red]")
         raise click.Abort()
-
     commit = get_head_commit()
     message = get_head_message()
-
     if not quiet:
         console.print(f"\n[bold]Proving repository:[/bold] {root}")
         console.print(f"  HEAD: {commit[:12]}..." if commit else "  HEAD: unknown")
         console.print(f"  {message}\n" if message else "")
-
     snapshot = FolderSnapshot(root, max_files=1000).scan()
-
     if not quiet:
-        table = Table()
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="green")
-        table.add_row("Files", str(len(snapshot.files)))
-        table.add_row("Duplicates", str(snapshot.duplicate_files))
-        table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
-        table.add_row("Merkle Root", snapshot.merkle_root[:64] + "...")
-        console.print(table)
-
-    receipt = make_receipt(snapshot)
-    receipt["git_commit"] = commit
-    receipt["git_message"] = message
-
+        _print_snapshot_table(snapshot)
+    receipt_data = make_receipt(snapshot)
+    receipt_data["git_commit"] = commit
+    receipt_data["git_message"] = message
     if output_path:
-        Path(output_path).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+        Path(output_path).write_text(json.dumps(receipt_data, indent=2, sort_keys=True))
         if not quiet:
             console.print(f"\n[dim]Receipt written to {output_path}[/dim]")
-
     if not quiet:
-        console.print(f"\n[green]Repository proven.[/green] Receipt hash: {receipt_hash(receipt)[:16]}...\n")
+        console.print(f"\n[green]Repository proven.[/green] Receipt hash: {receipt_hash(receipt_data)[:16]}...\n")
 
 
 @main.command("install-hook")
@@ -394,19 +360,10 @@ def scan(folder: str, max_files: int, output_path: str):
     folder_path = Path(folder).resolve()
     console.print(f"\n[bold]Scanning:[/bold] {folder_path}\n")
     snapshot = FolderSnapshot(folder_path, max_files).scan()
-
-    table = Table()
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("Files", str(len(snapshot.files)))
-    table.add_row("Duplicates", str(snapshot.duplicate_files))
-    table.add_row("Total Bytes", f"{snapshot.total_bytes:,}")
-    table.add_row("Merkle Root", snapshot.merkle_root)
-    console.print(table)
-
+    _print_snapshot_table(snapshot)
     if output_path:
-        receipt = make_receipt(snapshot)
-        Path(output_path).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+        receipt_data = make_receipt(snapshot)
+        Path(output_path).write_text(json.dumps(receipt_data, indent=2, sort_keys=True))
         console.print(f"\n[dim]Receipt written to {output_path}[/dim]")
     console.print()
 
@@ -421,12 +378,12 @@ def receipt(folder: str, output: str, max_files: int):
     folder_path = Path(folder).resolve()
     console.print(f"\n[bold]Generating receipt:[/bold] {folder_path}\n")
     snapshot = FolderSnapshot(folder_path, max_files).scan()
-    receipt = make_receipt(snapshot)
-    Path(output).write_text(json.dumps(receipt, indent=2, sort_keys=True))
+    receipt_data = make_receipt(snapshot)
+    Path(output).write_text(json.dumps(receipt_data, indent=2, sort_keys=True))
     console.print(f"[green]Receipt written:[/green] {output}")
-    console.print(f"  Hash: {receipt_hash(receipt)[:32]}...")
-    console.print(f"  Files: {receipt['files_seen']}")
-    console.print(f"  Merkle Root: {receipt['merkle_root'][:64]}...\n")
+    console.print(f"  Hash: {receipt_hash(receipt_data)[:32]}...")
+    console.print(f"  Files: {receipt_data['files_seen']}")
+    console.print(f"  Merkle Root: {receipt_data['merkle_root'][:64]}...\n")
 
 
 @main.command()
@@ -441,23 +398,19 @@ def diff(receipt_a: str, receipt_b: str):
     except Exception as exc:
         console.print(f"[red]Cannot read receipt:[/red] {exc}\n")
         return
-
-    console.print(f"\n[bold]Comparing receipts[/bold]\n")
+    console.print("\n[bold]Comparing receipts[/bold]\n")
     table = Table()
     table.add_column("Field", style="cyan")
     table.add_column("Receipt A", style="green")
     table.add_column("Receipt B", style="yellow")
     table.add_column("Status", style="white")
-
     fields = ["schema", "root", "merkle_root", "files_seen", "total_bytes", "scanned_at"]
     for field in fields:
         va = str(a.get(field, "N/A"))
         vb = str(b.get(field, "N/A"))
         status = "[green]match[/]" if va == vb else "[red]diff[/]"
         table.add_row(field, va[:48], vb[:48], status)
-
     console.print(table)
-
     if a.get("merkle_root") == b.get("merkle_root"):
         console.print("\n[green]Merkle roots match. Receipts describe the same folder state.[/green]\n")
     else:
@@ -470,12 +423,9 @@ def diff(receipt_a: str, receipt_b: str):
 def sign(receipt_path: str, key: str):
     """Sign a BitNet receipt with a local key."""
     print_banner()
-    console.print(f"\n[bold]Sign Receipt[/bold]\n")
+    console.print("\n[bold]Sign Receipt[/bold]\n")
     console.print("  [yellow]Status:[/yellow] PLANNED")
-    console.print("  This command will cryptographically sign a receipt using Ed25519.")
-    console.print("  The signature will be embedded in the receipt as:")
-    console.print("    { ... , \"signature\": \"base64...\", \"public_key\": \"...\" }")
-    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+    console.print("  See TRUST_STATUS.md before treating this as implemented.\n")
 
 
 @main.command()
@@ -485,11 +435,9 @@ def sign(receipt_path: str, key: str):
 def sbom(folder: str, output: str, max_files: int):
     """Generate an SBOM-compatible provenance receipt for a folder."""
     print_banner()
-    console.print(f"\n[bold]SBOM Provenance[/bold]\n")
+    console.print("\n[bold]SBOM Provenance[/bold]\n")
     console.print("  [yellow]Status:[/yellow] PLANNED")
-    console.print("  This command will generate a SPDX/CycloneDX-compatible provenance document")
-    console.print("  that binds the folder's Merkle root to a software bill of materials.")
-    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+    console.print("  See TRUST_STATUS.md before treating this as implemented.\n")
 
 
 @main.command("export-oscal")
@@ -498,11 +446,9 @@ def sbom(folder: str, output: str, max_files: int):
 def export_oscal(receipt_path: str, output: str):
     """Export a BitNet receipt as OSCAL assessment evidence."""
     print_banner()
-    console.print(f"\n[bold]Export OSCAL[/bold]\n")
+    console.print("\n[bold]Export OSCAL[/bold]\n")
     console.print("  [yellow]Status:[/yellow] PLANNED")
-    console.print("  This command will convert a BitNet receipt into NIST OSCAL assessment results")
-    console.print("  for inclusion in Authority to Operate (ATO) packages.")
-    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+    console.print("  See TRUST_STATUS.md before treating this as implemented.\n")
 
 
 @main.command()
@@ -512,13 +458,9 @@ def export_oscal(receipt_path: str, output: str):
 def attest(receipt_path: str, rekor: bool, key: str):
     """Attest a receipt's validity (cryptographic signing + optional transparency log)."""
     print_banner()
-    console.print(f"\n[bold]Attest Receipt[/bold]\n")
+    console.print("\n[bold]Attest Receipt[/bold]\n")
     console.print("  [yellow]Status:[/yellow] PLANNED")
-    console.print("  This command will:")
-    console.print("    1. Verify the receipt format and Merkle root")
-    console.print("    2. Sign the receipt with an Ed25519 key")
-    console.print("    3. Optionally publish to Sigstore Rekor for transparency")
-    console.print("  Track progress: https://github.com/overandor/bitnet/issues\n")
+    console.print("  See TRUST_STATUS.md before treating this as implemented.\n")
 
 
 @main.command("agent-action")
@@ -533,32 +475,17 @@ def attest(receipt_path: str, rekor: bool, key: str):
 @click.option("--metadata", default="", help="JSON string of extra metadata")
 @click.option("--anchor", is_flag=True, help="Anchor the action hash on-chain (Solana memo)")
 @click.option("--quiet", is_flag=True, help="Suppress banner and table output")
-def agent_action(
-    action_type: str,
-    agent_id: str,
-    workspace_hash: str,
-    input_hash: str,
-    output_hash: str,
-    tool_used: str,
-    files_touched: str,
-    merkle_root: str,
-    metadata: str,
-    anchor: bool,
-    quiet: bool,
-):
+def agent_action(action_type: str, agent_id: str, workspace_hash: str, input_hash: str, output_hash: str, tool_used: str, files_touched: str, merkle_root: str, metadata: str, anchor: bool, quiet: bool):
     """Log a material agent action to the receipt chain."""
     if not quiet:
         print_banner()
-
     if not is_material_action(action_type):
         if not quiet:
             console.print(f"\n[yellow]Skipped:[/yellow] '{action_type}' is not a material action under default policy.\n")
         return
-
     chain = AgentChain()
     files_list = [f.strip() for f in files_touched.split(",") if f.strip()] if files_touched else []
     meta = json.loads(metadata) if metadata else None
-
     entry = chain.append(
         action_type=action_type,
         agent_id=agent_id,
@@ -570,40 +497,30 @@ def agent_action(
         merkle_root=merkle_root,
         metadata=meta,
     )
-
-    receipt = entry["receipt"]
+    receipt_data = entry["receipt"]
     chain_hash = entry["chain_hash"]
-
     if not quiet:
-        console.print(f"\n[bold]Agent Action Logged[/bold]\n")
+        console.print("\n[bold]Agent Action Logged[/bold]\n")
         table = Table()
         table.add_column("Field", style="cyan")
         table.add_column("Value", style="green")
-        table.add_row("Action ID", receipt["action_id"])
-        table.add_row("Type", receipt["action_type"])
-        table.add_row("Agent", receipt["agent_id"])
-        table.add_row("Timestamp", receipt["timestamp"])
+        table.add_row("Action ID", receipt_data["action_id"])
+        table.add_row("Type", receipt_data["action_type"])
+        table.add_row("Agent", receipt_data["agent_id"])
+        table.add_row("Timestamp", receipt_data["timestamp"])
         table.add_row("Chain Hash", chain_hash[:32] + "...")
-        if receipt["previous_action_hash"]:
-            table.add_row("Previous Hash", receipt["previous_action_hash"][:32] + "...")
-        else:
-            table.add_row("Previous Hash", "(genesis)")
+        table.add_row("Previous Hash", receipt_data["previous_action_hash"][:32] + "..." if receipt_data["previous_action_hash"] else "(genesis)")
         console.print(table)
-
     if anchor:
         if not quiet:
-            console.print(f"\n[dim]Anchoring to Solana...[/dim]")
-        import asyncio
+            console.print("\n[dim]Anchoring to Solana...[/dim]")
         memo = f"BITNET_ACTION:{chain_hash}"
         result = asyncio.run(anchor_service._send_memo(memo))
         if result and result.get("status") == "confirmed":
-            entry["anchored"] = True
             if not quiet:
                 console.print(f"[green]Anchored:[/green] {result['explorer_url']}")
-        else:
-            if not quiet:
-                console.print(f"[red]Anchor failed:[/red] {result}")
-
+        elif not quiet:
+            console.print(f"[red]Anchor failed:[/red] {result}")
     if not quiet:
         console.print()
 
@@ -615,18 +532,14 @@ def agent_chain_verify(chain_path: str, quiet: bool):
     """Verify the integrity of the agent action hash chain."""
     if not quiet:
         print_banner()
-
     chain = AgentChain(Path(chain_path) if chain_path else None)
     report = chain.verify_chain()
-
     if quiet:
         print("VALID" if report["valid"] else "INVALID")
-        if report["errors"]:
-            for e in report["errors"]:
-                print(f"ERROR: {e}")
+        for e in report["errors"]:
+            print(f"ERROR: {e}")
         return
-
-    console.print(f"\n[bold]Agent Chain Verification[/bold]\n")
+    console.print("\n[bold]Agent Chain Verification[/bold]\n")
     table = Table()
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
@@ -634,7 +547,6 @@ def agent_chain_verify(chain_path: str, quiet: bool):
     table.add_row("Entries", str(report["length"]))
     table.add_row("Errors", str(len(report["errors"])))
     console.print(table)
-
     if report["errors"]:
         console.print("\n[red]Errors:[/red]")
         for e in report["errors"]:
@@ -667,11 +579,11 @@ def snapshot_cmd(folder: str, output_dir: str, max_files: int):
     console.print(f"\n[bold]Exporting snapshot:[/bold] {folder_path}\n")
     export_snapshot(folder_path, out_path, max_files)
     console.print(f"[green]Snapshot written:[/green] {out_path}")
-    console.print(f"  receipt.json   — canonical receipt")
-    console.print(f"  manifest.json  — snapshot manifest")
-    console.print(f"  files.json     — per-file metadata")
-    console.print(f"  merkle.json    — Merkle tree structure")
-    console.print(f"  proof.json     — per-file Merkle proofs")
+    console.print("  receipt.json   — canonical receipt")
+    console.print("  manifest.json  — snapshot manifest")
+    console.print("  files.json     — per-file metadata")
+    console.print("  merkle.json    — Merkle tree structure")
+    console.print("  proof.json     — per-file Merkle proofs")
     console.print(f"\n[dim]Verify with: bitnet verify-snapshot {out_path}[/dim]\n")
 
 
@@ -683,18 +595,13 @@ def verify_snapshot_cmd(snapshot_dir: str):
     dir_path = Path(snapshot_dir)
     console.print(f"\n[bold]Verifying snapshot:[/bold] {dir_path}\n")
     report = verify_snapshot(dir_path)
-
     table = Table()
     table.add_column("Check", style="cyan")
     table.add_column("Result", style="green")
     for check, result in report["checks"].items():
-        if isinstance(result, bool):
-            status = "[green]pass[/]" if result else "[red]FAIL[/]"
-        else:
-            status = str(result)
+        status = "[green]pass[/]" if result is True else "[red]FAIL[/]" if result is False else str(result)
         table.add_row(check, status)
     console.print(table)
-
     if report["valid"]:
         console.print("\n[green]Snapshot is valid and independently verifiable.[/green]\n")
     else:
@@ -707,18 +614,17 @@ def verify_snapshot_cmd(snapshot_dir: str):
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Bind interface (default: 127.0.0.1)")
 @click.option("--port", default=8765, type=int, help="Port (default: 8765)")
-@click.option("--public", "is_public", is_flag=True, help="Bind 0.0.0.0 (WARNING: exposes filesystem)")
+@click.option("--public", "is_public", is_flag=True, help="Bind 0.0.0.0 (WARNING: exposes filesystem metadata)")
 def serve(host: str, port: int, is_public: bool):
     """Launch the web dashboard (localhost by default)."""
     if is_public:
         host = "0.0.0.0"
     else:
         host = "127.0.0.1" if host == "0.0.0.0" else host
-
     print_banner()
     if host == "0.0.0.0":
         console.print("\n[yellow]WARNING:[/yellow] Binding to 0.0.0.0 — any device on your network can access this dashboard.")
-        console.print("        Set BITNET_API_KEY to require authentication.\n")
+        console.print("        Set BITNET_API_KEY and a root allowlist before public use.\n")
     console.print(f"\n[green]Dashboard running at http://{host}:{port}[/green]")
     console.print(f"[dim]API key required: {'yes' if os.getenv('BITNET_API_KEY') else 'no (set BITNET_API_KEY to enforce)'}[/dim]\n")
     from bitnet.web import run_server
