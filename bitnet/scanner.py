@@ -1,4 +1,4 @@
-"""Filesystem scanner — hash files, detect changes, build Merkle trees."""
+"""Filesystem scanner — hash files, detect changes, build path-bound Merkle trees."""
 
 from __future__ import annotations
 
@@ -29,8 +29,25 @@ def sha256_file(path: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+def canonical_leaf_hash(rel_path: str, size_bytes: int, raw_hash: str) -> str:
+    """Hash the file identity, not only the file bytes.
+
+    Earlier BitNet roots were built only from content hashes. That detected byte
+    tampering, but it did not bind the root to the folder layout. This leaf hash
+    commits to the relative path, file size, and content hash so renames/path
+    swaps change the Merkle root.
+    """
+    payload = {
+        "rel_path": str(rel_path).replace("\\", "/"),
+        "size_bytes": int(size_bytes),
+        "raw_hash": raw_hash,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def merkle_root(hashes: list[str]) -> str:
-    """Compute Merkle root from a list of file hashes (deterministic, sorted)."""
+    """Compute Merkle root from a list of leaf hashes (deterministic, sorted)."""
     if not hashes:
         return "sha256:" + hashlib.sha256(b"").hexdigest()
     layer = [bytes.fromhex(h.replace("sha256:", "")) for h in sorted(hashes)]
@@ -47,7 +64,7 @@ def merkle_root(hashes: list[str]) -> str:
 def iter_files(root: Path, max_files: int) -> Iterator[Path]:
     """Yield file paths under root, skipping common build/cache dirs."""
     seen = 0
-    for path in root.rglob("*"):
+    for path in sorted(root.rglob("*")):
         if seen >= max_files:
             break
         if any(part in SKIP_DIRS for part in path.parts):
@@ -87,8 +104,9 @@ class FolderSnapshot:
 
         for path in iter_files(self.root, self.max_files):
             stat = path.stat()
-            rel = str(path.relative_to(self.root))
+            rel = str(path.relative_to(self.root)).replace("\\", "/")
             raw_hash = sha256_file(path)
+            leaf_hash = canonical_leaf_hash(rel, stat.st_size, raw_hash)
             duplicate_of = hash_to_first.get(raw_hash)
             hash_to_first.setdefault(raw_hash, rel)
             hash_counts[raw_hash] += 1
@@ -104,12 +122,13 @@ class FolderSnapshot:
                 "size_bytes": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                 "raw_hash": raw_hash,
+                "leaf_hash": leaf_hash,
                 "duplicate_of": duplicate_of,
             })
 
         self.duplicate_groups = sum(1 for c in hash_counts.values() if c > 1)
         self.duplicate_files = sum(c - 1 for c in hash_counts.values() if c > 1)
-        self.merkle_root = merkle_root([f["raw_hash"] for f in self.files])
+        self.merkle_root = merkle_root([f["leaf_hash"] for f in self.files])
         return self
 
     def to_dict(self) -> dict:
