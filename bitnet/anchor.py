@@ -4,7 +4,8 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from pathlib import Path
+from typing import Optional
 
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.devnet.solana.com")
 SOLANA_KEYPAIR_PATH = os.getenv("SOLANA_KEYPAIR_PATH", "")
@@ -31,13 +32,13 @@ class AnchorService:
             data = json.loads(kp_path.read_text())
             self.keypair = Keypair.from_secret_key(bytes(data))
         except Exception:
-            pass
+            self.keypair = None
 
     @property
     def available(self) -> bool:
         try:
-            from solana.rpc.async_api import AsyncClient
-            from solana.keypair import Keypair
+            from solana.rpc.async_api import AsyncClient  # noqa: F401
+            from solana.keypair import Keypair  # noqa: F401
             return self.keypair is not None
         except ImportError:
             return False
@@ -73,10 +74,7 @@ class AnchorService:
                 from solana.transaction import Transaction
                 from solana.message import Message
                 from solana.instruction import Instruction
-                from solana.rpc.types import TxOpts
                 from solders.pubkey import Pubkey
-                from solders.system_program import ID as SYS_PROGRAM_ID
-                from solders.hash import Hash as Blockhash
 
                 async with AsyncClient(self.rpc_url) as client:
                     ix = Instruction(
